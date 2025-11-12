@@ -10,6 +10,7 @@ app.post("/generate", async (req, res) => {
   try {
     const { image, prompt } = req.body;
 
+    // Cria a previsão (pedido para gerar imagem)
     const response = await fetch("https://api.replicate.com/v1/predictions", {
       method: "POST",
       headers: {
@@ -26,12 +27,39 @@ app.post("/generate", async (req, res) => {
       }),
     });
 
-    const result = await response.json();
-    res.json(result);
+    const prediction = await response.json();
+    if (prediction.error) {
+      throw new Error(prediction.error.message);
+    }
+
+    // Aguarda o resultado da IA antes de responder
+    let statusUrl = prediction.urls.get;
+    let output = null;
+
+    while (!output) {
+      const statusResponse = await fetch(statusUrl, {
+        headers: {
+          Authorization: "Token r8_QectgBKZYD9i0a1isBSuYQeqruEyaWx1npYTs",
+        },
+      });
+      const statusData = await statusResponse.json();
+
+      if (statusData.status === "succeeded") {
+        output = statusData.output[0];
+        break;
+      } else if (statusData.status === "failed") {
+        throw new Error("A geração da tatuagem falhou.");
+      }
+
+      // espera 3 segundos antes de tentar novamente
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+
+    res.json({ output: [output] });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erro ao gerar imagem" });
   }
 });
 
-app.listen(10000, () => console.log("Servidor rodando na porta 10000"));
+app.listen(10000, () => console.log("✅ Servidor InkVision ativo na porta 10000"));
