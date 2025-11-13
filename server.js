@@ -4,62 +4,72 @@ import cors from "cors";
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+
+// health check
+app.get("/", (req, res) => {
+  res.json({ status: "ok", message: "InkVision proxy active" });
+});
 
 app.post("/generate", async (req, res) => {
   try {
-    const { image, prompt } = req.body;
+    const { prompt } = req.body;
+    if (!prompt) return res.status(400).json({ error: "Missing prompt" });
 
-    // Cria a previsão (pedido para gerar imagem)
-    const response = await fetch("https://api.replicate.com/v1/predictions", {
+    const API_TOKEN = process.env.REPLICATE_API_TOKEN;
+    if (!API_TOKEN) {
+      return res.status(500).json({ error: "Server not configured (REPLICATE_API_TOKEN missing)" });
+    }
+
+    // create prediction
+    const create = await fetch("https://api.replicate.com/v1/predictions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Token r8_QectgBKZYD9i0a1isBSuYQeqruEyaWx1npYTs",
+        "Authorization": `Token ${API_TOKEN}`,
       },
       body: JSON.stringify({
-        version:
-          "a16acaa9b8a4a302a5a30e8c5e7a1dffb9a69f7d86de52f8f3e8b3c7e1a4f7b7",
+        version: "ac732df8b0a9f96780e799f4575fba548a0d02b9b1c8f9e2028a7e7f5d0e3b8e",
         input: {
-          prompt: `Tatuagem ${prompt} aplicada na pele da pessoa da foto`,
-          image: image,
+          prompt: `${prompt}, realistic tattoo design, high detail, no background`,
         },
       }),
     });
 
-    const prediction = await response.json();
+    const prediction = await create.json();
     if (prediction.error) {
-      throw new Error(prediction.error.message);
+      console.error("Replicate create error:", prediction);
+      return res.status(500).json({ error: "Replicate create error" });
     }
 
-    // Aguarda o resultado da IA antes de responder
-    let statusUrl = prediction.urls.get;
-    let output = null;
-
-    while (!output) {
-      const statusResponse = await fetch(statusUrl, {
-        headers: {
-          Authorization: "Token r8_QectgBKZYD9i0a1isBSuYQeqruEyaWx1npYTs",
-        },
+    // Polling until finished
+    let result = prediction;
+    const maxTries = 30; // ~90 seconds
+    let tries = 0;
+    while (result.status !== "succeeded" && result.status !== "failed" && tries < maxTries) {
+      await new Promise(r => setTimeout(r, 3000));
+      const check = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
+        headers: { Authorization: `Token ${API_TOKEN}` },
       });
-      const statusData = await statusResponse.json();
-
-      if (statusData.status === "succeeded") {
-        output = statusData.output[0];
-        break;
-      } else if (statusData.status === "failed") {
-        throw new Error("A geração da tatuagem falhou.");
-      }
-
-      // espera 3 segundos antes de tentar novamente
-      await new Promise((r) => setTimeout(r, 3000));
+      result = await check.json();
+      tries++;
     }
 
-    res.json({ output: [output] });
+    if (result.status === "succeeded" && result.output) {
+      // result.output is usually array of URLs
+      return res.json({ output: result.output });
+    } else if (result.status === "failed") {
+      console.error("Replicate failed:", result);
+      return res.status(500).json({ error: "Generation failed" });
+    } else {
+      return res.status(504).json({ error: "Generation timed out" });
+    }
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erro ao gerar imagem" });
+    console.error("Server error:", err);
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
-app.listen(10000, () => console.log("✅ Servidor InkVision ativo na porta 10000"));
+// start
+const port = process.env.PORT || 10000;
+app.listen(port, () => console.log(`Proxy running on ${port}`));
